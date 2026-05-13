@@ -34,11 +34,9 @@ async function soraFetch(url, options) {
 }
 
 function sleep(ms) {
-    // Use fetchv2 as a timing mechanism since setTimeout may not be available
     if (typeof setTimeout !== 'undefined') {
         return new Promise(function(resolve) { setTimeout(resolve, ms); });
     }
-    // Fallback: busy wait using Date
     return new Promise(function(resolve) {
         const start = Date.now();
         function check() {
@@ -123,10 +121,10 @@ async function searchAnimex(keyword, limit) {
 
 function categorizeProviders(providers) {
     const skip = ['kaamx'];
-    const batch1 = []; // Hard sub, Best Quality
-    const batch2 = []; // Hard sub, Fastest, High Quality
-    const batch3 = []; // Hard sub, Fast
-    const batch4 = []; // Soft sub
+    const batch1 = [];
+    const batch2 = [];
+    const batch3 = [];
+    const batch4 = [];
 
     for (var i = 0; i < providers.length; i++) {
         var p = providers[i];
@@ -164,7 +162,7 @@ async function fetchProviderStream(slug, epNumber, provider) {
         const source = data.sources[0];
         const tip = provider.tip ? ' (' + provider.tip + ')' : '';
         return {
-            title: provider.id.toUpperCase() + ' DUB' + tip,
+            title: provider.id.toUpperCase() + tip,
             streamUrl: source.url,
             headers: data.headers || {}
         };
@@ -273,7 +271,6 @@ async function extractStreamUrl(url) {
         const slug = match[2];
         const epNumber = match[3];
 
-        // Fetch server list
         const serversRes = await animexFetch(ANIMEX_REST + '/servers?id=' + encodeURIComponent(slug) + '&epNum=' + epNumber);
         if (!serversRes) return JSON.stringify({ streams: [], subtitles: '' });
 
@@ -285,25 +282,21 @@ async function extractStreamUrl(url) {
         const cats = categorizeProviders(dubProviders);
         const streams = [];
 
-        // Batch 1: Hard sub, Best Quality (miku) — highest priority
         if (cats.batch1.length) {
             const results = await fetchBatch(cats.batch1, slug, epNumber);
             results.forEach(function(r) { streams.push(r); });
         }
 
-        // Batch 2: Hard sub, Fastest, High Quality (mochi, mimi)
         if (cats.batch2.length) {
             const results = await fetchBatch(cats.batch2, slug, epNumber);
             results.forEach(function(r) { streams.push(r); });
         }
 
-        // Batch 3: Hard sub, Fast (uwu, beep etc)
         if (cats.batch3.length) {
             const results = await fetchBatch(cats.batch3, slug, epNumber);
             results.forEach(function(r) { streams.push(r); });
         }
 
-        // Batch 4: Soft sub (yuki) — only if nothing returned above
         if (!streams.length && cats.batch4.length) {
             const results = await fetchBatch(cats.batch4, slug, epNumber);
             results.forEach(function(r) { streams.push(r); });
