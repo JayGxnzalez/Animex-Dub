@@ -17,7 +17,9 @@ async function soraFetch(url, options) {
                 url,
                 options.headers || {},
                 options.method || 'GET',
-                options.body || null
+                options.body || null,
+                true,
+                options.encoding || 'utf-8'
             );
         } else {
             return await fetch(url, options);
@@ -32,7 +34,22 @@ async function soraFetch(url, options) {
 }
 
 function sleep(ms) {
-    return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    // Use fetchv2 as a timing mechanism since setTimeout may not be available
+    if (typeof setTimeout !== 'undefined') {
+        return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+    // Fallback: busy wait using Date
+    return new Promise(function(resolve) {
+        const start = Date.now();
+        function check() {
+            if (Date.now() - start >= ms) {
+                resolve();
+            } else {
+                Promise.resolve().then(check);
+            }
+        }
+        check();
+    });
 }
 
 // ==========================================
