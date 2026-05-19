@@ -151,6 +151,45 @@ function categorizeProviders(providers) {
     return { batch1: batch1, batch2: batch2, batch3: batch3, batch4: batch4 };
 }
 
+// ==========================================
+// SUBTITLE EXTRACTOR
+// Handles providers that return tracks array
+// ==========================================
+
+function extractSubtitles(data) {
+    const tracks = data.tracks;
+    if (!tracks || !tracks.length) return { subtitles: '', subtitlesHeaders: {}, allSubtitles: [] };
+
+    const headers = data.headers || {};
+
+    const allSubtitles = tracks
+        .filter(function(t) { return t.url; })
+        .map(function(t) {
+            return {
+                url: t.url,
+                label: t.label || t.lang || 'Unknown',
+                kind: t.kind || 'captions',
+                headers: headers
+            };
+        });
+
+    // Prefer default English track, fall back to first caption
+    const primary = tracks.find(function(t) { return t.default && t.url; })
+        || tracks.find(function(t) { return t.lang === 'en' && t.url; })
+        || tracks.find(function(t) { return t.url; });
+
+    return {
+        subtitles: primary ? primary.url : '',
+        subtitlesHeaders: primary ? headers : {},
+        allSubtitles: allSubtitles
+    };
+}
+
+// ==========================================
+// PROVIDER STREAM FETCHER
+// Handles multiple sources (uwu) and subtitles (mimi)
+// ==========================================
+
 async function fetchProviderStream(slug, epNumber, provider) {
     try {
         const url = ANIMEX_REST + '/sources?id=' + encodeURIComponent(slug) + '&epNum=' + epNumber + '&type=dub&providerId=' + provider.id;
@@ -159,13 +198,37 @@ async function fetchProviderStream(slug, epNumber, provider) {
         const data = typeof res.json === 'function' ? await res.json() : JSON.parse(await res.text());
         if (!data || !data.sources || !data.sources.length) return null;
 
-        const source = data.sources[0];
         const tip = provider.tip ? ' (' + provider.tip + ')' : '';
-        return {
+        const headers = data.headers || {};
+        const subData = extractSubtitles(data);
+
+        // If multiple sources (e.g. uwu returns 1080p, 720p, 360p), return all as separate streams
+        if (data.sources.length > 1) {
+            return data.sources.map(function(source) {
+                const quality = source.quality && source.quality !== 'default' && source.quality !== 'auto'
+                    ? ' ' + source.quality
+                    : '';
+                return {
+                    title: provider.id.toUpperCase() + quality + tip,
+                    streamUrl: source.url,
+                    headers: headers,
+                    subtitles: subData.subtitles,
+                    subtitlesHeaders: subData.subtitlesHeaders,
+                    allSubtitles: subData.allSubtitles
+                };
+            });
+        }
+
+        // Single source
+        const source = data.sources[0];
+        return [{
             title: provider.id.toUpperCase() + tip,
             streamUrl: source.url,
-            headers: data.headers || {}
-        };
+            headers: headers,
+            subtitles: subData.subtitles,
+            subtitlesHeaders: subData.subtitlesHeaders,
+            allSubtitles: subData.allSubtitles
+        }];
     } catch(e) {
         console.error('fetchProviderStream error for ' + provider.id + ':' + e);
         return null;
@@ -177,7 +240,18 @@ async function fetchBatch(providers, slug, epNumber) {
     const results = await Promise.all(providers.map(function(p) {
         return fetchProviderStream(slug, epNumber, p);
     }));
-    return results.filter(function(r) { return r !== null; });
+    // Flatten — each provider can now return array of streams
+    const flat = [];
+    results.forEach(function(r) {
+        if (r) {
+            if (Array.isArray(r)) {
+                r.forEach(function(s) { flat.push(s); });
+            } else {
+                flat.push(r);
+            }
+        }
+    });
+    return flat;
 }
 
 // ==========================================
@@ -266,45 +340,57 @@ async function extractEpisodes(url) {
 async function extractStreamUrl(url) {
     try {
         const match = url.match(/anime\/(\d+)\/([^\/]+)\/(\d+)/);
-        if (!match) return JSON.stringify({ streams: [], subtitles: '' });
+        if (!match) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
 
         const slug = match[2];
         const epNumber = match[3];
 
         const serversRes = await animexFetch(ANIMEX_REST + '/servers?id=' + encodeURIComponent(slug) + '&epNum=' + epNumber);
-        if (!serversRes) return JSON.stringify({ streams: [], subtitles: '' });
+        if (!serversRes) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
 
         const serversData = typeof serversRes.json === 'function' ? await serversRes.json() : JSON.parse(await serversRes.text());
         const dubProviders = serversData.dubProviders || [];
 
-        if (!dubProviders.length) return JSON.stringify({ streams: [], subtitles: '' });
+        if (!dubProviders.length) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
 
         const cats = categorizeProviders(dubProviders);
         const streams = [];
+        let subtitles = '';
+        let subtitlesHeaders = {};
+        let allSubtitles = [];
+
+        const processBatchResults = function(results) {
+            results.forEach(function(r) {
+                streams.push({ title: r.title, streamUrl: r.streamUrl, headers: r.headers });
+                if (!subtitles && r.subtitles) {
+                    subtitles = r.subtitles;
+                    subtitlesHeaders = r.subtitlesHeaders;
+                }
+                if (r.allSubtitles && r.allSubtitles.length) {
+                    r.allSubtitles.forEach(function(s) { allSubtitles.push(s); });
+                }
+            });
+        };
 
         if (cats.batch1.length) {
-            const results = await fetchBatch(cats.batch1, slug, epNumber);
-            results.forEach(function(r) { streams.push(r); });
+            processBatchResults(await fetchBatch(cats.batch1, slug, epNumber));
         }
 
         if (cats.batch2.length) {
-            const results = await fetchBatch(cats.batch2, slug, epNumber);
-            results.forEach(function(r) { streams.push(r); });
+            processBatchResults(await fetchBatch(cats.batch2, slug, epNumber));
         }
 
         if (cats.batch3.length) {
-            const results = await fetchBatch(cats.batch3, slug, epNumber);
-            results.forEach(function(r) { streams.push(r); });
+            processBatchResults(await fetchBatch(cats.batch3, slug, epNumber));
         }
 
         if (!streams.length && cats.batch4.length) {
-            const results = await fetchBatch(cats.batch4, slug, epNumber);
-            results.forEach(function(r) { streams.push(r); });
+            processBatchResults(await fetchBatch(cats.batch4, slug, epNumber));
         }
 
-        return JSON.stringify({ streams: streams, subtitles: '' });
+        return JSON.stringify({ streams: streams, subtitles: subtitles, subtitlesHeaders: subtitlesHeaders, allSubtitles: allSubtitles });
     } catch(e) {
         console.error('extractStreamUrl error:' + e);
-        return JSON.stringify({ streams: [], subtitles: '' });
+        return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
     }
 }
