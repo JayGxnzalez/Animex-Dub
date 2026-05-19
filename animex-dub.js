@@ -202,24 +202,7 @@ async function fetchProviderStream(slug, epNumber, provider) {
         const headers = data.headers || {};
         const subData = extractSubtitles(data);
 
-        // If multiple sources (e.g. uwu returns 1080p, 720p, 360p), return all as separate streams
-        if (data.sources.length > 1) {
-            return data.sources.map(function(source) {
-                const quality = source.quality && source.quality !== 'default' && source.quality !== 'auto'
-                    ? ' ' + source.quality
-                    : '';
-                return {
-                    title: provider.id.toUpperCase() + quality + tip,
-                    streamUrl: source.url,
-                    headers: headers,
-                    subtitles: subData.subtitles,
-                    subtitlesHeaders: subData.subtitlesHeaders,
-                    allSubtitles: subData.allSubtitles
-                };
-            });
-        }
-
-        // Single source
+        // Always take first source (highest quality) regardless of how many are returned
         const source = data.sources[0];
         return [{
             title: provider.id.toUpperCase() + tip,
@@ -240,16 +223,9 @@ async function fetchBatch(providers, slug, epNumber) {
     const results = await Promise.all(providers.map(function(p) {
         return fetchProviderStream(slug, epNumber, p);
     }));
-    // Flatten — each provider can now return array of streams
     const flat = [];
     results.forEach(function(r) {
-        if (r) {
-            if (Array.isArray(r)) {
-                r.forEach(function(s) { flat.push(s); });
-            } else {
-                flat.push(r);
-            }
-        }
+        if (r) r.forEach(function(s) { flat.push(s); });
     });
     return flat;
 }
