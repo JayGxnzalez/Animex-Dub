@@ -114,8 +114,8 @@ async function searchAnimex(keyword, limit) {
 // PROVIDER PRIORITY
 // Batch 1: Hard sub + Best Quality (miku)
 // Batch 2: Hard sub + Fastest + High Quality (mochi, mimi)
-// Batch 3: Hard sub + Fast (uwu, beep etc)
-// Batch 4: Soft sub (yuki) — only if nothing else works
+// Batch 3: Hard sub + Fast (uwu, beep, yuki etc)
+// Batch 4: Soft sub — only if nothing else works
 // Skip: kaamx always
 // ==========================================
 
@@ -137,7 +137,10 @@ function categorizeProviders(providers) {
         var isHigh = tip.indexOf('high quality') !== -1;
         var isSoft = tip.indexOf('soft') !== -1;
 
-        if (isHard && isBest) {
+        // yuki always goes to batch3 regardless of tip
+        if (p.id === 'yuki') {
+            batch3.push(p);
+        } else if (isHard && isBest) {
             batch1.push(p);
         } else if (isHard && isFastest && isHigh) {
             batch2.push(p);
@@ -173,9 +176,11 @@ function extractSubtitles(data) {
             };
         });
 
-    // Prefer default English track, fall back to first caption
+    // Prefer default track, then English by lang code or full word, then first available
     const primary = tracks.find(function(t) { return t.default && t.url; })
-        || tracks.find(function(t) { return t.lang === 'en' && t.url; })
+        || tracks.find(function(t) {
+            return t.url && t.lang && (t.lang === 'en' || t.lang.toLowerCase().includes('english'));
+        })
         || tracks.find(function(t) { return t.url; });
 
     return {
@@ -186,8 +191,22 @@ function extractSubtitles(data) {
 }
 
 // ==========================================
+// PROVIDER FALLBACK HEADERS
+// Some providers return empty headers inconsistently
+// ==========================================
+
+const PROVIDER_FALLBACK_HEADERS = {
+    'mimi': {
+        'Referer': 'https://vibeplayer.site/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    },
+    'yuki': {
+        'Referer': 'https://megaplay.buzz/'
+    }
+};
+
+// ==========================================
 // PROVIDER STREAM FETCHER
-// Handles multiple sources (uwu) and subtitles (mimi)
 // ==========================================
 
 async function fetchProviderStream(slug, epNumber, provider) {
@@ -199,10 +218,16 @@ async function fetchProviderStream(slug, epNumber, provider) {
         if (!data || !data.sources || !data.sources.length) return null;
 
         const tip = provider.tip ? ' (' + provider.tip + ')' : '';
-        const headers = data.headers || {};
+
+        // Use API headers, fall back to hardcoded if empty
+        var headers = data.headers || {};
+        if (!headers.Referer && PROVIDER_FALLBACK_HEADERS[provider.id]) {
+            headers = PROVIDER_FALLBACK_HEADERS[provider.id];
+        }
+
         const subData = extractSubtitles(data);
 
-        // Always take first source (highest quality) regardless of how many are returned
+        // Always take first source (highest quality)
         const source = data.sources[0];
         return [{
             title: provider.id.toUpperCase() + tip,
@@ -331,9 +356,9 @@ async function extractStreamUrl(url) {
 
         const cats = categorizeProviders(dubProviders);
         const streams = [];
-        let subtitles = '';
-        let subtitlesHeaders = {};
-        let allSubtitles = [];
+        var subtitles = '';
+        var subtitlesHeaders = {};
+        var allSubtitles = [];
 
         const processBatchResults = function(results) {
             results.forEach(function(r) {
