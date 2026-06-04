@@ -98,12 +98,12 @@ function extractSubtitles(data) {
     const tracks = data.tracks;
     if (!tracks || !tracks.length) return { subtitles: '', subtitlesHeaders: {}, allSubtitles: [] };
     const headers = data.headers || {};
-    const allSubtitles = tracks.filter(function(t) { return t.url; }).map(function(t) {
+    const allSubtitles = tracks.filter(function(t) { return t.url && t.kind !== 'thumbnails'; }).map(function(t) {
         return { url: t.url, label: t.label || t.lang || 'Unknown', kind: t.kind || 'captions', headers: headers };
     });
-    const primary = tracks.find(function(t) { return t.default && t.url; })
-        || tracks.find(function(t) { return t.url && t.lang && (t.lang === 'en' || t.lang.toLowerCase().includes('english')); })
-        || tracks.find(function(t) { return t.url; });
+    const primary = tracks.find(function(t) { return t.default && t.url && t.kind !== 'thumbnails'; })
+        || tracks.find(function(t) { return t.url && t.kind !== 'thumbnails' && t.lang && (t.lang === 'en' || t.lang.toLowerCase().includes('english')); })
+        || tracks.find(function(t) { return t.url && t.kind !== 'thumbnails'; });
     return {
         subtitles: primary ? primary.url : '',
         subtitlesHeaders: primary ? headers : {},
