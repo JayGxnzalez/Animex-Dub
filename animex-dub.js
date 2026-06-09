@@ -112,7 +112,6 @@ function extractSubtitles(data) {
 }
 
 const PROVIDER_FALLBACK_HEADERS = {
-    'mimi': { 'Referer': 'https://vibeplayer.site/', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
     'yuki': { 'Referer': 'https://megaplay.buzz/' }
 };
 
@@ -124,9 +123,10 @@ async function fetchProviderStream(slug, epNumber, provider) {
         const data = typeof res.json === 'function' ? await res.json() : JSON.parse(await res.text());
         if (!data || !data.sources || !data.sources.length) return null;
         const tip = provider.tip ? ' (' + provider.tip + ')' : '';
-        var headers = data.headers || {};
-        if (!headers.Referer && PROVIDER_FALLBACK_HEADERS[provider.id]) {
-            headers = PROVIDER_FALLBACK_HEADERS[provider.id];
+        // yuki needs Referer, mimi/mochi work without any headers
+        var headers = {};
+        if (provider.id === 'yuki') {
+            headers = (data.headers && data.headers.Referer) ? data.headers : PROVIDER_FALLBACK_HEADERS['yuki'];
         }
         const subData = extractSubtitles(data);
         const source = data.sources[0];
