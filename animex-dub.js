@@ -1,9 +1,13 @@
 // AnimexOne DUB Module
-// Parallel batched fetching with quality-first priority ordering
+// Parallel fetching with sliding-window rate limiter
 
 const ANIMEX_API = 'https://graphql.animex.one/graphql';
 const ANIMEX_REST = 'https://pp.animex.one/rest/api';
 const ANILIST_API = 'https://graphql.anilist.co/';
+
+// ==========================================
+// SORA FETCH WRAPPER
+// ==========================================
 
 async function soraFetch(url, options) {
     options = options || { headers: {}, method: 'GET', body: null };
@@ -19,29 +23,42 @@ async function soraFetch(url, options) {
 }
 
 function sleep(ms) {
-    if (typeof setTimeout !== 'undefined') {
-        return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+// ==========================================
+// SLIDING WINDOW RATE LIMITER
+// 10 requests per 60 seconds — allows bursts,
+// parallel requests fire immediately if under budget
+// ==========================================
+
+const ANIMEX_MAX_REQUESTS = 10;
+const ANIMEX_WINDOW_MS = 60000;
+var animexRequestTimes = [];
+var animexAdmission = Promise.resolve();
+
+async function animexFetch(url, options) {
+    var ticket = animexAdmission.then(function() { return animexReserveSlot(); });
+    animexAdmission = ticket.catch(function() {});
+    await ticket;
+    return soraFetch(url, options);
+}
+
+async function animexReserveSlot() {
+    var now = Date.now();
+    animexRequestTimes = animexRequestTimes.filter(function(t) { return now - t < ANIMEX_WINDOW_MS; });
+    if (animexRequestTimes.length >= ANIMEX_MAX_REQUESTS) {
+        var waitTime = ANIMEX_WINDOW_MS - (now - animexRequestTimes[0]) + 50;
+        console.log('[RateLimit] Window full, waiting ' + waitTime + 'ms');
+        await sleep(waitTime);
+        return animexReserveSlot();
     }
-    return new Promise(function(resolve) {
-        const start = Date.now();
-        function check() {
-            if (Date.now() - start >= ms) resolve();
-            else Promise.resolve().then(check);
-        }
-        check();
-    });
+    animexRequestTimes.push(Date.now());
 }
 
-let lastRequest = 0;
-const MIN_INTERVAL = 6000;
-
-async function animexFetch(url) {
-    const now = Date.now();
-    const timeSinceLast = now - lastRequest;
-    if (timeSinceLast < MIN_INTERVAL) await sleep(MIN_INTERVAL - timeSinceLast);
-    lastRequest = Date.now();
-    return soraFetch(url);
-}
+// ==========================================
+// ANILIST
+// ==========================================
 
 const ANILIST_LOOKUP_QUERY = 'query($id: Int) { Page(page: 1, perPage: 1) { media(id: $id) { id idMal averageScore title { romaji english native } episodes nextAiringEpisode { airingAt timeUntilAiring episode } status genres format description startDate { year month day } endDate { year month day } popularity coverImage { color large extraLarge } } } }';
 
@@ -73,26 +90,10 @@ async function searchAnimex(keyword, limit) {
     } catch(e) { return []; }
 }
 
-function categorizeProviders(providers) {
-    const skip = ['kaamx'];
-    const batch1 = [], batch2 = [], batch3 = [], batch4 = [];
-    for (var i = 0; i < providers.length; i++) {
-        var p = providers[i];
-        if (skip.indexOf(p.id) !== -1) continue;
-        var tip = (p.tip || '').toLowerCase();
-        var isHard = tip.indexOf('hard') !== -1;
-        var isBest = tip.indexOf('best quality') !== -1;
-        var isFastest = tip.indexOf('fastest') !== -1;
-        var isHigh = tip.indexOf('high quality') !== -1;
-        var isSoft = tip.indexOf('soft') !== -1;
-        if (p.id === 'yuki') { batch3.push(p); }
-        else if (isHard && isBest) { batch1.push(p); }
-        else if (isHard && isFastest && isHigh) { batch2.push(p); }
-        else if (isHard) { batch3.push(p); }
-        else if (isSoft) { batch4.push(p); }
-    }
-    return { batch1: batch1, batch2: batch2, batch3: batch3, batch4: batch4 };
-}
+// ==========================================
+// SUBTITLE EXTRACTOR
+// Filters out thumbnail tracks
+// ==========================================
 
 function extractSubtitles(data) {
     const tracks = data.tracks;
@@ -111,46 +112,51 @@ function extractSubtitles(data) {
     };
 }
 
+// ==========================================
+// PROVIDER FALLBACK HEADERS
+// Only yuki needs a Referer — mimi/mochi work without headers
+// ==========================================
+
 const PROVIDER_FALLBACK_HEADERS = {
     'yuki': { 'Referer': 'https://megaplay.buzz/' }
 };
 
+// ==========================================
+// PROVIDER STREAM FETCHER
+// ==========================================
+
 async function fetchProviderStream(slug, epNumber, provider) {
     try {
         const url = ANIMEX_REST + '/sources?id=' + encodeURIComponent(slug) + '&epNum=' + epNumber + '&type=dub&providerId=' + provider.id;
-        const res = await soraFetch(url);
+        const res = await animexFetch(url);
         if (!res) return null;
         const data = typeof res.json === 'function' ? await res.json() : JSON.parse(await res.text());
         if (!data || !data.sources || !data.sources.length) return null;
         const tip = provider.tip ? ' (' + provider.tip + ')' : '';
-        // yuki needs Referer, mimi/mochi work without any headers
+        // yuki needs Referer, mimi/mochi work with no headers
         var headers = {};
         if (provider.id === 'yuki') {
             headers = (data.headers && data.headers.Referer) ? data.headers : PROVIDER_FALLBACK_HEADERS['yuki'];
         }
         const subData = extractSubtitles(data);
         const source = data.sources[0];
-        return [{
+        return {
             title: provider.id.toUpperCase() + tip,
             streamUrl: source.url,
             headers: headers,
             subtitles: subData.subtitles,
             subtitlesHeaders: subData.subtitlesHeaders,
             allSubtitles: subData.allSubtitles
-        }];
+        };
     } catch(e) {
         console.error('fetchProviderStream error for ' + provider.id + ':' + e);
         return null;
     }
 }
 
-async function fetchBatch(providers, slug, epNumber) {
-    await sleep(MIN_INTERVAL);
-    const results = await Promise.all(providers.map(function(p) { return fetchProviderStream(slug, epNumber, p); }));
-    const flat = [];
-    results.forEach(function(r) { if (r) r.forEach(function(s) { flat.push(s); }); });
-    return flat;
-}
+// ==========================================
+// MODULE FUNCTIONS
+// ==========================================
 
 async function searchResults(keyword) {
     try {
@@ -206,27 +212,28 @@ async function extractStreamUrl(url) {
         if (!match) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
         const slug = match[2];
         const epNumber = match[3];
+
         const serversRes = await animexFetch(ANIMEX_REST + '/servers?id=' + encodeURIComponent(slug) + '&epNum=' + epNumber);
         if (!serversRes) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
         const serversData = typeof serversRes.json === 'function' ? await serversRes.json() : JSON.parse(await serversRes.text());
-        const dubProviders = serversData.dubProviders || [];
+
+        const dubProviders = (serversData.dubProviders || []).filter(function(p) { return p.id !== 'kaamx'; });
         if (!dubProviders.length) return JSON.stringify({ streams: [], subtitles: '', subtitlesHeaders: {}, allSubtitles: [] });
-        const cats = categorizeProviders(dubProviders);
+
+        // Fetch all dub providers in parallel — rate limiter handles throttling
+        const settled = await Promise.all(dubProviders.map(function(p) { return fetchProviderStream(slug, epNumber, p); }));
         const streams = [];
         var subtitles = '';
         var subtitlesHeaders = {};
         var allSubtitles = [];
-        const processBatchResults = function(results) {
-            results.forEach(function(r) {
-                streams.push({ title: r.title, streamUrl: r.streamUrl, headers: r.headers });
-                if (!subtitles && r.subtitles) { subtitles = r.subtitles; subtitlesHeaders = r.subtitlesHeaders; }
-                if (r.allSubtitles && r.allSubtitles.length) { r.allSubtitles.forEach(function(s) { allSubtitles.push(s); }); }
-            });
-        };
-        if (cats.batch1.length) processBatchResults(await fetchBatch(cats.batch1, slug, epNumber));
-        if (cats.batch2.length) processBatchResults(await fetchBatch(cats.batch2, slug, epNumber));
-        if (cats.batch3.length) processBatchResults(await fetchBatch(cats.batch3, slug, epNumber));
-        if (!streams.length && cats.batch4.length) processBatchResults(await fetchBatch(cats.batch4, slug, epNumber));
+
+        settled.forEach(function(r) {
+            if (!r) return;
+            streams.push({ title: r.title, streamUrl: r.streamUrl, headers: r.headers });
+            if (!subtitles && r.subtitles) { subtitles = r.subtitles; subtitlesHeaders = r.subtitlesHeaders; }
+            if (r.allSubtitles && r.allSubtitles.length) { r.allSubtitles.forEach(function(s) { allSubtitles.push(s); }); }
+        });
+
         return JSON.stringify({ streams: streams, subtitles: subtitles, subtitlesHeaders: subtitlesHeaders, allSubtitles: allSubtitles });
     } catch(e) {
         console.error('extractStreamUrl error:' + e);
