@@ -27,6 +27,45 @@ function sleep(ms) {
 }
 
 // ==========================================
+// COOKIE JAR
+// Captures _amx_id from pp.animex.one responses
+// and sends it back to bypass bot detection
+// ==========================================
+
+var animexCookies = {};
+
+function storeCookies(setCookieHeader) {
+    if (!setCookieHeader) return;
+    var cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+    cookies.forEach(function(c) {
+        var parts = c.split(';')[0].split('=');
+        if (parts.length >= 2) {
+            var key = parts[0].trim();
+            var val = parts.slice(1).join('=').trim();
+            animexCookies[key] = val;
+        }
+    });
+}
+
+function getCookieHeader() {
+    return Object.keys(animexCookies).map(function(k) { return k + '=' + animexCookies[k]; }).join('; ');
+}
+
+async function animexRestFetch(url) {
+    var headers = {};
+    var cookie = getCookieHeader();
+    if (cookie) headers['Cookie'] = cookie;
+    var res = await soraFetch(url, { headers: headers });
+    if (res) {
+        try {
+            var setCookie = res.headers ? (res.headers['Set-Cookie'] || res.headers['set-cookie']) : null;
+            if (setCookie) storeCookies(setCookie);
+        } catch(e) {}
+    }
+    return res;
+}
+
+// ==========================================
 // SLIDING WINDOW RATE LIMITER
 // 10 requests per 60 seconds — allows bursts,
 // parallel requests fire immediately if under budget
@@ -41,7 +80,7 @@ async function animexFetch(url, options) {
     var ticket = animexAdmission.then(function() { return animexReserveSlot(); });
     animexAdmission = ticket.catch(function() {});
     await ticket;
-    return soraFetch(url, options);
+    return animexRestFetch(url);
 }
 
 async function animexReserveSlot() {
